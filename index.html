@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RC Mission Control v2.0</title>
+    <title>RC Mission Control v2.1</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         :root { --neon-green: #00ff41; --danger-red: #ff3131; --panel-bg: #111; }
@@ -19,7 +19,7 @@
         
         @keyframes pulse { 0% { transform: translate(-50%, -50%) scale(0.8); opacity: 1; } 100% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; } }
 
-        #setup-bar { width: 90%; max-width: 800px; background: var(--panel-bg); border: 1px solid var(--neon-green); padding: 10px; margin-bottom: 10px; display: flex; gap: 10px; align-items: center; justify-content: center; }
+        #setup-bar { width: 90%; max-width: 800px; background: var(--panel-bg); border: 1px solid var(--neon-green); padding: 10px; margin-bottom: 10px; display: flex; gap: 10px; align-items: center; }
         input[type="text"] { background: #000; border: 1px solid var(--neon-green); color: var(--neon-green); padding: 5px; font-family: inherit; flex-grow: 1; }
 
         #controls { width: 90%; max-width: 800px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
@@ -28,6 +28,9 @@
         button { background: transparent; color: var(--neon-green); border: 1px solid var(--neon-green); padding: 10px; cursor: pointer; font-family: inherit; width: 100%; transition: 0.3s; margin-top: 5px; }
         button:hover { background: var(--neon-green); color: #000; }
         button.active { background: var(--danger-red); color: white; border-color: white; }
+
+        #status-indicator { width: 12px; height: 12px; border-radius: 50%; background: #333; display: inline-block; margin-right: 5px; }
+        .online { background: var(--neon-green) !important; box-shadow: 0 0 8px var(--neon-green); }
 
         #map-area { background: #1a1a1a; position: relative; border: 1px dashed var(--neon-green); height: 150px; cursor: crosshair; display: flex; align-items: center; justify-content: center; overflow: hidden; }
         #map-img { max-width: 100%; max-height: 100%; pointer-events: none; opacity: 0.5; }
@@ -38,7 +41,7 @@
 <body>
 
 <div id="header">
-    <strong>[ MISSION CONTROL v2.0 ]</strong>
+    <strong>[ MISSION CONTROL v2.1 ]</strong>
 </div>
 
 <div id="main-view">
@@ -47,8 +50,9 @@
 </div>
 
 <div id="setup-bar">
+    <div id="status-indicator"></div>
     <span>CAR_ID:</span>
-    <input type="text" id="carIdInput" placeholder="Enter a secret ID (e.g. lucknow-rc-2026)">
+    <input type="text" id="carIdInput" placeholder="Enter secret Mission-ID">
     <button onclick="saveId()" style="width: auto;">SAVE</button>
 </div>
 
@@ -71,56 +75,58 @@
         <img id="map-img" src="" alt="Map Area">
         <p id="map-placeholder" style="position:absolute;">UPLOAD MAP TO BEGIN</p>
     </div>
-    <div id="status-bar">SYSTEM STATUS: ID REQUIRED...</div>
+    <div id="status-bar">SYSTEM STATUS: READY TO INITIALIZE...</div>
 </div>
 
 <script>
     let peer, conn, localStream;
     let camEnabled = true;
 
+    // Google's STUN servers to help bypass firewalls
+    const peerConfig = {
+        config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }] }
+    };
+
     const statusEl = document.getElementById('status-bar');
+    const indicator = document.getElementById('status-indicator');
     const hud = document.getElementById('hud-overlay');
     const mapImg = document.getElementById('map-img');
     const carIdInput = document.getElementById('carIdInput');
     const camBtn = document.getElementById('camToggle');
 
-    // Load ID from LocalStorage on startup
     window.onload = () => {
         const savedId = localStorage.getItem('rc_car_id');
-        if (savedId) {
-            carIdInput.value = savedId;
-            statusEl.innerText = "STATUS: ID LOADED. READY.";
-        }
+        if (savedId) carIdInput.value = savedId;
     };
 
     function saveId() {
         localStorage.setItem('rc_car_id', carIdInput.value);
-        statusEl.innerText = "STATUS: ID SAVED LOCALLY.";
-        alert("ID Saved! This tab and your other devices should use this ID.");
+        alert("ID Saved Locally!");
     }
 
     function getSecretId() {
         return carIdInput.value || 'default-rc-id';
     }
 
-    // --- CAR LOGIC (PHONE) ---
+    // --- CAR LOGIC ---
     async function startCar() {
         const SECRET_ID = getSecretId();
-        statusEl.innerText = "STATUS: INITIALIZING CAMERA...";
+        statusEl.innerText = "STATUS: ACCESSING CAMERA...";
         try {
             localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
             document.getElementById('remoteVideo').srcObject = localStream;
-            
-            camBtn.classList.remove('hidden'); // Show toggle button
+            camBtn.classList.remove('hidden');
 
-            peer = new Peer(SECRET_ID);
+            peer = new Peer(SECRET_ID, peerConfig);
+            
             peer.on('open', (id) => {
-                statusEl.innerText = `STATUS: CAR LIVE (ID: ${id}). WAITING...`;
+                indicator.classList.add('online');
+                statusEl.innerText = `STATUS: CAR LIVE (ID: ${id}). WAITING FOR OPERATOR...`;
             });
 
             peer.on('call', (call) => {
                 call.answer(localStream);
-                statusEl.innerText = "STATUS: STREAMING TO OPERATOR";
+                statusEl.innerText = "STATUS: OPERATOR CONNECTED - STREAMING";
             });
 
             peer.on('connection', (c) => {
@@ -129,50 +135,51 @@
                     if (data.type === 'WAYPOINT') triggerWaypoint(data.x, data.y);
                 });
             });
+
+            peer.on('error', (err) => {
+                console.error(err);
+                if(err.type === 'unavailable-id') alert("Error: This ID is already in use by another tab!");
+            });
+
         } catch (err) {
             statusEl.innerText = "ERROR: CAMERA DENIED";
-            console.error(err);
         }
     }
 
-    // --- CAMERA TOGGLE ---
+    // --- OPERATOR LOGIC ---
+    function startOperator() {
+        const SECRET_ID = getSecretId();
+        statusEl.innerText = "STATUS: ATTEMPTING HANDSHAKE...";
+        peer = new Peer(peerConfig); 
+        
+        peer.on('open', (id) => {
+            indicator.classList.add('online');
+            // Data channel
+            conn = peer.connect(SECRET_ID);
+            
+            // Video channel
+            const call = peer.call(SECRET_ID, null); 
+            call.on('stream', (stream) => {
+                document.getElementById('remoteVideo').srcObject = stream;
+                statusEl.innerText = "STATUS: CONNECTION ESTABLISHED. RECEIVING FEED.";
+            });
+
+            conn.on('open', () => { console.log("Data connection open"); });
+        });
+
+        peer.on('error', (err) => {
+            statusEl.innerText = "ERROR: UNABLE TO FIND CAR";
+        });
+    }
+
     function toggleCam() {
         if (!localStream) return;
         camEnabled = !camEnabled;
         localStream.getVideoTracks()[0].enabled = camEnabled;
-        
-        if (camEnabled) {
-            camBtn.innerText = "DISABLE CAMERA";
-            camBtn.classList.remove('active');
-            statusEl.innerText = "STATUS: CAMERA ACTIVE";
-        } else {
-            camBtn.innerText = "ENABLE CAMERA";
-            camBtn.classList.add('active');
-            statusEl.innerText = "STATUS: CAMERA DISABLED (STEALTH MODE)";
-        }
+        camBtn.innerText = camEnabled ? "DISABLE CAMERA" : "ENABLE CAMERA";
+        camBtn.classList.toggle('active', !camEnabled);
     }
 
-    // --- OPERATOR LOGIC (LAPTOP) ---
-    function startOperator() {
-        const SECRET_ID = getSecretId();
-        statusEl.innerText = "STATUS: CONNECTING TO " + SECRET_ID + "...";
-        peer = new Peer(); 
-        
-        peer.on('open', () => {
-            conn = peer.connect(SECRET_ID);
-            const call = peer.call(SECRET_ID, null); 
-            call.on('stream', (stream) => {
-                document.getElementById('remoteVideo').srcObject = stream;
-                statusEl.innerText = "STATUS: RECEIVING FEED FROM CAR.";
-            });
-        });
-
-        peer.on('error', (err) => {
-            statusEl.innerText = "ERROR: " + err.type;
-        });
-    }
-
-    // --- WAYPOINT & MAP LOGIC ---
     function handleMapClick(e) {
         if (!conn || !conn.open) return;
         const rect = e.currentTarget.getBoundingClientRect();
